@@ -167,14 +167,7 @@ namespace Emby.Server.Implementations.Session
             }
 
             // Notify WebSocket about timeout
-            try
-            {
-                await SendForceKeepAlive(webSocket).ConfigureAwait(false);
-            }
-            catch (WebSocketException exception)
-            {
-                _logger.LogWarning(exception, "Cannot send ForceKeepAlive message to WebSocket {0}.", webSocket);
-            }
+            await TrySendForceKeepAlive(webSocket).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -228,13 +221,8 @@ namespace Emby.Server.Implementations.Session
 
             foreach (var webSocket in inactive)
             {
-                try
+                if (!await TrySendForceKeepAlive(webSocket).ConfigureAwait(false))
                 {
-                    await SendForceKeepAlive(webSocket).ConfigureAwait(false);
-                }
-                catch (WebSocketException exception)
-                {
-                    _logger.LogInformation(exception, "Error sending ForceKeepAlive message to WebSocket.");
                     lost.Add(webSocket);
                 }
             }
@@ -257,12 +245,21 @@ namespace Emby.Server.Implementations.Session
         /// Sends a ForceKeepAlive message to a WebSocket.
         /// </summary>
         /// <param name="webSocket">The WebSocket.</param>
-        /// <returns>Task.</returns>
-        private async Task SendForceKeepAlive(IWebSocketConnection webSocket)
+        /// <returns><c>true</c> if the keepalive send succeeded; otherwise, <c>false</c>.</returns>
+        private async Task<bool> TrySendForceKeepAlive(IWebSocketConnection webSocket)
         {
-            await webSocket.SendAsync(
-                new ForceKeepAliveMessage(WebSocketLostTimeout),
-                CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await webSocket.SendAsync(
+                    new ForceKeepAliveMessage(WebSocketLostTimeout),
+                    CancellationToken.None).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception exception) when (exception is WebSocketException or OperationCanceledException or ObjectDisposedException)
+            {
+                _logger.LogInformation(exception, "Error sending ForceKeepAlive message to WebSocket {0}.", webSocket);
+                return false;
+            }
         }
     }
 }
