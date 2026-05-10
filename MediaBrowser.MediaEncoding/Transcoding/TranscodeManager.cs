@@ -344,15 +344,12 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
         if (!string.IsNullOrWhiteSpace(deviceId))
         {
-            var audioCodec = state.ActualOutputAudioCodec;
-            var videoCodec = state.ActualOutputVideoCodec;
             var hardwareAccelerationType = _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType;
-
-            _sessionManager.ReportTranscodingInfo(deviceId, new TranscodingInfo
+            var transcodingInfo = new TranscodingInfo
             {
                 Bitrate = bitRate ?? state.TotalOutputBitrate,
-                AudioCodec = audioCodec,
-                VideoCodec = videoCodec,
+                AudioCodec = state.ActualOutputAudioCodec,
+                VideoCodec = state.ActualOutputVideoCodec,
                 Container = state.OutputContainer,
                 Framerate = framerate,
                 CompletionPercentage = percentComplete,
@@ -363,7 +360,14 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
                 IsVideoDirect = EncodingHelper.IsCopyCodec(state.OutputVideoCodec),
                 HardwareAccelerationType = hardwareAccelerationType,
                 TranscodeReasons = state.TranscodeReasons
-            });
+            };
+
+            if (job is not null)
+            {
+                job.TranscodingInfo = transcodingInfo;
+            }
+
+            _sessionManager.ReportTranscodingInfo(deviceId, transcodingInfo);
         }
     }
 

@@ -216,8 +216,33 @@ public class PlaystateController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<ActionResult> ReportPlaybackProgress([FromBody] PlaybackProgressInfo playbackProgressInfo)
     {
+        var session = await GetPlaybackSessionForProgress(playbackProgressInfo).ConfigureAwait(false);
+        if (session is null)
+        {
+            return NoContent();
+        }
+
+        if (IsStaleTranscodeUpdate(playbackProgressInfo.PlayMethod, playbackProgressInfo.PlaySessionId))
+        {
+            _logger.LogDebug("Treating stale transcode playback progress as stopped. PlaySessionId: {0}", playbackProgressInfo.PlaySessionId ?? string.Empty);
+            await _sessionManager.OnPlaybackStopped(new PlaybackStopInfo
+            {
+                Item = playbackProgressInfo.Item,
+                ItemId = playbackProgressInfo.ItemId,
+                SessionId = session.Id,
+                MediaSourceId = playbackProgressInfo.MediaSourceId,
+                PositionTicks = playbackProgressInfo.PositionTicks,
+                LiveStreamId = playbackProgressInfo.LiveStreamId,
+                PlaySessionId = playbackProgressInfo.PlaySessionId,
+                Failed = true,
+                PlaylistItemId = playbackProgressInfo.PlaylistItemId,
+                NowPlayingQueue = playbackProgressInfo.NowPlayingQueue
+            }).ConfigureAwait(false);
+            return NoContent();
+        }
+
         playbackProgressInfo.PlayMethod = ValidatePlayMethod(playbackProgressInfo.PlayMethod, playbackProgressInfo.PlaySessionId);
-        playbackProgressInfo.SessionId = await RequestHelpers.GetSessionId(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        playbackProgressInfo.SessionId = session.Id;
         await _sessionManager.OnPlaybackProgress(playbackProgressInfo).ConfigureAwait(false);
         return NoContent();
     }
@@ -246,13 +271,19 @@ public class PlaystateController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<ActionResult> ReportPlaybackStopped([FromBody] PlaybackStopInfo playbackStopInfo)
     {
+        var session = _sessionManager.GetSession(User.GetDeviceId()!, User.GetClient()!, User.GetVersion()!);
+        if (session is null)
+        {
+            return NoContent();
+        }
+
         _logger.LogDebug("ReportPlaybackStopped PlaySessionId: {0}", playbackStopInfo.PlaySessionId ?? string.Empty);
         if (!string.IsNullOrWhiteSpace(playbackStopInfo.PlaySessionId))
         {
             await _transcodeManager.KillTranscodingJobs(User.GetDeviceId()!, playbackStopInfo.PlaySessionId, s => true).ConfigureAwait(false);
         }
 
-        playbackStopInfo.SessionId = await RequestHelpers.GetSessionId(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        playbackStopInfo.SessionId = session.Id;
         await _sessionManager.OnPlaybackStopped(playbackStopInfo).ConfigureAwait(false);
         return NoContent();
     }
@@ -382,8 +413,33 @@ public class PlaystateController : BaseJellyfinApiController
             RepeatMode = repeatMode ?? RepeatMode.RepeatNone
         };
 
+        var session = await GetPlaybackSessionForProgress(playbackProgressInfo).ConfigureAwait(false);
+        if (session is null)
+        {
+            return NoContent();
+        }
+
+        if (IsStaleTranscodeUpdate(playbackProgressInfo.PlayMethod, playbackProgressInfo.PlaySessionId))
+        {
+            _logger.LogDebug("Treating stale transcode playback progress as stopped. PlaySessionId: {0}", playbackProgressInfo.PlaySessionId ?? string.Empty);
+            await _sessionManager.OnPlaybackStopped(new PlaybackStopInfo
+            {
+                Item = playbackProgressInfo.Item,
+                ItemId = playbackProgressInfo.ItemId,
+                SessionId = session.Id,
+                MediaSourceId = playbackProgressInfo.MediaSourceId,
+                PositionTicks = playbackProgressInfo.PositionTicks,
+                LiveStreamId = playbackProgressInfo.LiveStreamId,
+                PlaySessionId = playbackProgressInfo.PlaySessionId,
+                Failed = true,
+                PlaylistItemId = playbackProgressInfo.PlaylistItemId,
+                NowPlayingQueue = playbackProgressInfo.NowPlayingQueue
+            }).ConfigureAwait(false);
+            return NoContent();
+        }
+
         playbackProgressInfo.PlayMethod = ValidatePlayMethod(playbackProgressInfo.PlayMethod, playbackProgressInfo.PlaySessionId);
-        playbackProgressInfo.SessionId = await RequestHelpers.GetSessionId(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        playbackProgressInfo.SessionId = session.Id;
         await _sessionManager.OnPlaybackProgress(playbackProgressInfo).ConfigureAwait(false);
         return NoContent();
     }
@@ -465,7 +521,13 @@ public class PlaystateController : BaseJellyfinApiController
             await _transcodeManager.KillTranscodingJobs(User.GetDeviceId()!, playbackStopInfo.PlaySessionId, s => true).ConfigureAwait(false);
         }
 
-        playbackStopInfo.SessionId = await RequestHelpers.GetSessionId(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        var session = _sessionManager.GetSession(User.GetDeviceId()!, User.GetClient()!, User.GetVersion()!);
+        if (session is null)
+        {
+            return NoContent();
+        }
+
+        playbackStopInfo.SessionId = session.Id;
         await _sessionManager.OnPlaybackStopped(playbackStopInfo).ConfigureAwait(false);
         return NoContent();
     }
@@ -531,5 +593,52 @@ public class PlaystateController : BaseJellyfinApiController
         }
 
         return method;
+    }
+
+    private async Task<SessionInfo?> GetPlaybackSessionForProgress(PlaybackProgressInfo playbackProgressInfo)
+    {
+        var session = _sessionManager.GetSession(User.GetDeviceId()!, User.GetClient()!, User.GetVersion()!);
+        if (session is not null)
+        {
+            ReattachTranscodingInfo(session, playbackProgressInfo);
+            return session;
+        }
+
+        var job = string.IsNullOrWhiteSpace(playbackProgressInfo.PlaySessionId)
+            ? null
+            : _transcodeManager.GetTranscodingJob(playbackProgressInfo.PlaySessionId);
+        if (job is null)
+        {
+            return null;
+        }
+
+        session = await RequestHelpers.GetSession(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        ReattachTranscodingInfo(session, playbackProgressInfo, job);
+        _logger.LogInformation("Restored session {SessionId} from active transcode job {PlaySessionId}", session.Id, playbackProgressInfo.PlaySessionId ?? string.Empty);
+        return session;
+    }
+
+    private void ReattachTranscodingInfo(SessionInfo session, PlaybackProgressInfo playbackProgressInfo, TranscodingJob? job = null)
+    {
+        job ??= string.IsNullOrWhiteSpace(playbackProgressInfo.PlaySessionId)
+            ? null
+            : _transcodeManager.GetTranscodingJob(playbackProgressInfo.PlaySessionId);
+        if (job is null)
+        {
+            return;
+        }
+
+        playbackProgressInfo.PlayMethod = PlayMethod.Transcode;
+        if (!string.IsNullOrWhiteSpace(session.DeviceId) && job.TranscodingInfo is not null)
+        {
+            _sessionManager.ReportTranscodingInfo(session.DeviceId, job.TranscodingInfo);
+        }
+    }
+
+    private bool IsStaleTranscodeUpdate(PlayMethod method, string? playSessionId)
+    {
+        return method == PlayMethod.Transcode
+            && !string.IsNullOrWhiteSpace(playSessionId)
+            && _transcodeManager.GetTranscodingJob(playSessionId) is null;
     }
 }

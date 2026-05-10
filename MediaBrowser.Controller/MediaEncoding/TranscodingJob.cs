@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Session;
 using Microsoft.Extensions.Logging;
 
 namespace MediaBrowser.Controller.MediaEncoding;
@@ -105,6 +106,11 @@ public sealed class TranscodingJob : IDisposable
     /// Gets or sets completion percentage.
     /// </summary>
     public double? CompletionPercentage { get; set; }
+
+    /// <summary>
+    /// Gets or sets the latest session-level transcoding snapshot.
+    /// </summary>
+    public TranscodingInfo? TranscodingInfo { get; set; }
 
     /// <summary>
     /// Gets or sets bytes downloaded.
